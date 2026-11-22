@@ -174,7 +174,7 @@ export async function me() {
   return { user: user?.user || user, creator };
 }
 
-async function waitPublish(publishId, timeoutMs = 5 * 60_000) {
+async function waitPublish(publishId, timeoutMs = 5 * 60_000, onStatus = null) {
   const start = Date.now();
   let last = '';
   while (Date.now() - start < timeoutMs) {
@@ -184,6 +184,7 @@ async function waitPublish(publishId, timeoutMs = 5 * 60_000) {
     });
     if (st.status !== last) {
       console.error(`TikTok durum (${publishId}): ${st.status}`);
+      if (onStatus) onStatus(st);
       last = st.status;
     }
     if (st.status === 'PUBLISH_COMPLETE' || st.status === 'SEND_TO_USER_INBOX') return st;
@@ -215,6 +216,12 @@ export async function publishVideo({
   caption = '',
   direct = false,
   privacy = 'SELF_ONLY',
+  disableComment = false,
+  disableDuet = false,
+  disableStitch = false,
+  brandOrganicToggle = false,
+  brandContentToggle = false,
+  onStatus = null,
   dryRun = false,
 }) {
   loadEnv();
@@ -236,9 +243,11 @@ export async function publishVideo({
     payload.post_info = {
       title: caption.slice(0, 2200),
       privacy_level: privacy,
-      disable_duet: false,
-      disable_comment: false,
-      disable_stitch: false,
+      disable_duet: Boolean(disableDuet),
+      disable_comment: Boolean(disableComment),
+      disable_stitch: Boolean(disableStitch),
+      brand_organic_toggle: Boolean(brandOrganicToggle),
+      brand_content_toggle: Boolean(brandContentToggle),
     };
   }
 
@@ -248,6 +257,7 @@ export async function publishVideo({
 
   const init = await ttApi(endpoint, { method: 'POST', body: payload });
   const { publish_id: publishId, upload_url: uploadUrl } = init;
+  if (onStatus) onStatus({ status: 'UPLOADING', publish_id: publishId });
   console.error(`TikTok video yükleniyor (${totalChunkCount} parça, ${(stat.size / 1e6).toFixed(2)} MB)...`);
 
   const buf = fs.readFileSync(abs);
@@ -269,7 +279,7 @@ export async function publishVideo({
     }
   }
   console.error('TikTok dosya transferi tamamlandı, işleme bekleniyor...');
-  const status = await waitPublish(publishId);
+  const status = await waitPublish(publishId, 5 * 60_000, onStatus);
   return { publishId, mode: direct ? 'DIRECT_POST' : 'INBOX_UPLOAD', status };
 }
 
@@ -285,6 +295,10 @@ export async function publishCarousel({
   direct = false,
   privacy = 'SELF_ONLY',
   autoAddMusic = true,
+  disableComment = false,
+  brandOrganicToggle = false,
+  brandContentToggle = false,
+  onStatus = null,
   dryRun = false,
 }) {
   loadEnv();
@@ -315,9 +329,9 @@ export async function publishCarousel({
   if (direct) {
     postInfo.privacy_level = privacy;
     postInfo.auto_add_music = autoAddMusic;
-    postInfo.disable_comment = false;
-    postInfo.brand_content_toggle = false;
-    postInfo.brand_organic_toggle = true;
+    postInfo.disable_comment = Boolean(disableComment);
+    postInfo.brand_content_toggle = Boolean(brandContentToggle);
+    postInfo.brand_organic_toggle = Boolean(brandOrganicToggle);
   }
 
   const payload = {
@@ -336,8 +350,44 @@ export async function publishCarousel({
   }
 
   const init = await ttApi('/v2/post/publish/content/init/', { method: 'POST', body: payload });
-  const status = await waitPublish(init.publish_id);
+  if (onStatus) onStatus({ status: 'PROCESSING_UPLOAD', publish_id: init.publish_id });
+  const status = await waitPublish(init.publish_id, 5 * 60_000, onStatus);
   return { publishId: init.publish_id, mode: payload.post_mode, count: urls.length, status };
+}
+
+export function createAuthSession(scopes = DEFAULT_SCOPES) {
+  loadEnv();
+  const clientKey = requireEnv('TIKTOK_CLIENT_KEY');
+  const redirectUri = process.env.TIKTOK_REDIRECT_URI || DEFAULT_REDIRECT_URI;
+  const state = crypto.randomBytes(16).toString('hex');
+  const codeVerifier = randomVerifier(64);
+  const codeChallenge = crypto.createHash('sha256').update(codeVerifier).digest('hex');
+
+  const authUrl = new URL(AUTH_URL);
+  authUrl.searchParams.set('client_key', clientKey);
+  authUrl.searchParams.set('response_type', 'code');
+  authUrl.searchParams.set('scope', scopes);
+  authUrl.searchParams.set('redirect_uri', redirectUri);
+  authUrl.searchParams.set('state', state);
+  authUrl.searchParams.set('code_challenge', codeChallenge);
+  authUrl.searchParams.set('code_challenge_method', 'S256');
+  return { authUrl: authUrl.toString(), state, codeVerifier, redirectUri };
+}
+
+export async function completeAuthCode({ code, codeVerifier }) {
+  loadEnv();
+  const clientKey = requireEnv('TIKTOK_CLIENT_KEY');
+  const clientSecret = requireEnv('TIKTOK_CLIENT_SECRET');
+  const redirectUri = process.env.TIKTOK_REDIRECT_URI || DEFAULT_REDIRECT_URI;
+  const tok = await tokenRequest({
+    client_key: clientKey,
+    client_secret: clientSecret,
+    code,
+    grant_type: 'authorization_code',
+    redirect_uri: redirectUri,
+    code_verifier: codeVerifier,
+  });
+  return persistTokenPayload(tok);
 }
 
 async function runAuth(scopes) {

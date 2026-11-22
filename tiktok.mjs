@@ -164,7 +164,7 @@ async function ttApi(pathname, { method = 'POST', body } = {}) {
 }
 
 export async function me() {
-  const user = await ttApi('/v2/user/info/?fields=open_id,display_name,username,avatar_url', { method: 'GET' });
+  const user = await ttApi('/v2/user/info/?fields=open_id,display_name,avatar_url', { method: 'GET' });
   let creator = null;
   try {
     creator = await ttApi('/v2/post/publish/creator_info/query/', { method: 'POST', body: {} });

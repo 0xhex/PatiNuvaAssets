@@ -1,20 +1,29 @@
 #!/usr/bin/env node
 /**
- * Bir klasördeki JPEG görsellerden Instagram carousel postu paylaşır.
+ * Bir klasördeki JPEG görsellerden Instagram carousel postu paylaşır;
+ * --tiktok (veya --tiktok-direct) verilirse aynı içeriği TikTok Photo Mode'a da gönderir.
  *
- *   INSTAGRAM_TOKEN=... node ig-carousel.mjs PN-026-instagram [--dry-run]
+ *   node ig-carousel.mjs PN-026-instagram [--dry-run] [--tiktok] [--tiktok-direct] [--tiktok-privacy PUBLIC_TO_EVERYONE]
  *
- * Görseller herkese açık olmalı (Meta sunucuları indirir); bu yüzden klasörün
+ * Görseller herkese açık olmalı (Meta/TikTok sunucuları indirir); bu yüzden klasörün
  * GitHub'a push'lanmış olması gerekir. Açıklama klasördeki caption.txt'den okunur.
  * Instagram: yalnızca JPEG, en/boy oranı 4:5 ile 1.91:1 arası, en fazla 10 görsel.
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { loadEnv, publishCarousel as publishTikTokCarousel } from './tiktok.mjs';
+
+loadEnv();
 
 const [dir, ...rest] = process.argv.slice(2);
 const dryRun = rest.includes('--dry-run');
+const withTikTok = rest.includes('--tiktok') || rest.includes('--tiktok-direct');
+const tiktokDirect = rest.includes('--tiktok-direct');
+const ttPrivacyIdx = rest.indexOf('--tiktok-privacy');
+const tiktokPrivacy = ttPrivacyIdx >= 0 && rest[ttPrivacyIdx + 1] ? rest[ttPrivacyIdx + 1] : 'SELF_ONLY';
+
 if (!dir) {
-  console.error('Kullanım: node ig-carousel.mjs <klasör> [--dry-run]');
+  console.error('Kullanım: node ig-carousel.mjs <klasör> [--dry-run] [--tiktok] [--tiktok-direct] [--tiktok-privacy ...]');
   process.exit(2);
 }
 
@@ -32,7 +41,11 @@ for (const u of urls) {
 }
 console.error(`${urls.length} görsel erişilebilir.`);
 if (dryRun) {
-  console.log(JSON.stringify({ urls, caption }, null, 2));
+  const out = { instagram: { urls, caption } };
+  if (withTikTok) {
+    out.tiktok = await publishTikTokCarousel({ dir, caption, direct: tiktokDirect, privacy: tiktokPrivacy, dryRun: true });
+  }
+  console.log(JSON.stringify(out, null, 2));
   process.exit(0);
 }
 if (!token) throw new Error('INSTAGRAM_TOKEN tanımlı değil');
@@ -73,4 +86,15 @@ const carousel = await ig(`${me.id}/media`, { media_type: 'CAROUSEL', children: 
 await waitReady(carousel.id);
 const { id: mediaId } = await ig(`${me.id}/media_publish`, { creation_id: carousel.id });
 const { permalink } = await ig(mediaId, { fields: 'permalink' }, 'GET');
-console.log(JSON.stringify({ mediaId, permalink }, null, 2));
+
+const result = { mediaId, permalink };
+if (withTikTok) {
+  console.error('TikTok Photo Mode paylaşımı başlatılıyor...');
+  try {
+    result.tiktok = await publishTikTokCarousel({ dir, caption, direct: tiktokDirect, privacy: tiktokPrivacy });
+  } catch (e) {
+    result.tiktok_error = e.message || String(e);
+    console.error('TikTok HATA:', result.tiktok_error);
+  }
+}
+console.log(JSON.stringify(result, null, 2));
